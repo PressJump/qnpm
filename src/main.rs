@@ -85,6 +85,12 @@ async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir:
             if !Path::new(&cache_dir.join("node_modules")).exists() {
                 std::fs::create_dir_all(&cache_dir.join("node_modules"));
             }
+
+            //if package-lock.json doesn't exist, create it
+            if !Path::new("package-lock.json").exists() {
+                init::create_bare_package_lock_json(&current_dir);
+            }
+
             //wrap params in arc
             add::add_packages_with_dependencies(&package_names, Arc::new(current_dir), Arc::new(cache_dir)).await;
         },

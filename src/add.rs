@@ -99,6 +99,57 @@ fn add_to_package_json(package_name: &str, current_dir: &PathBuf) -> Result<(), 
     Ok(())
 }
 
+//dependencies object custom type
+enum Dependencies {
+    //dependencies must be enum of name and version number so both &str and with variable age
+    Name(String),
+    Version(String)
+}
+
+// version, resolved, dependencies, engines
+//dependencies must be enum of string and version number
+async fn add_to_package_lock_json(
+    package_name: &str, 
+    current_dir: &PathBuf, 
+    version: &str, 
+    resolved: &str, 
+    dependencies: Value
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let package_lock_json_path = current_dir.join("package-lock.json");
+
+    // Check if package-lock.json exists, if not, create a new JSON object with basic structure
+    let mut package_lock_json = if package_lock_json_path.exists() {
+        let package_lock_json_content = fs::read_to_string(&package_lock_json_path)?;
+        serde_json::from_str(&package_lock_json_content)?
+    } else {
+        serde_json::json!({
+            "name": "your_project_name", // Replace with actual project name
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "dependencies": {}
+        })
+    };
+
+    // Add or update the dependencies
+    let dependencies_object = package_lock_json["dependencies"]
+        .as_object_mut()
+        .ok_or("Invalid package-lock.json format")?;
+
+    dependencies_object.insert(package_name.to_string(), serde_json::json!({
+        "version": version,
+        "resolved": resolved,
+        "dependencies": dependencies
+    }));
+
+    let updated_json = serde_json::to_string_pretty(&package_lock_json)?;
+    fs::write(package_lock_json_path, updated_json)?;
+
+    Ok(())
+}
+
+
+
 #[async_recursion]
 pub async fn add_packages_with_dependencies(
     package_names: &[&str],
@@ -125,7 +176,6 @@ pub async fn add_packages_with_dependencies(
                 return Ok::<(), Box<dyn Error + Send + Sync>>(());
             }
 
-            add_to_package_json(&package_name_owned, &current_dir_clone);
             if package_path.exists() {
                 println!("Package {} already installed, using cache.", package_name_owned);
                 folder_symlink(&current_dir_clone, &cache_dir_clone, package_name);
@@ -133,6 +183,14 @@ pub async fn add_packages_with_dependencies(
                 println!("Downloading package {}", package_name_owned);
                 download_and_extract_with_reqwest(&tarball_url, &current_dir_clone, &cache_dir_clone).await?;
             }
+            
+            add_to_package_json(&package_name_owned, &current_dir_clone);
+
+            let segments: Vec<&str> = file_name.split('-').collect();
+            let version_with_extension = segments.last().ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Failed to extract version and file extension from URL")))?;
+            let package_version = version_with_extension.trim_end_matches(".tgz");
+            add_to_package_lock_json(&package_name_owned, &current_dir_clone, &package_version, &tarball_url, serde_json::json!({})).await?;
+
             install_package_dependencies(&package_name_owned, &tarball_url, &current_dir_clone, &cache_dir_clone).await?;
             Ok(())
         });
