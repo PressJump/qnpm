@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if command != "config" && command != "add" {
         let elapsed = start.elapsed().as_secs_f64();
         println!("Elapsed: {:.8?}", elapsed);
-        goto_match(&command, args_iter.collect(), start).await;
+        goto_match(&command, args_iter.collect(), start, PathBuf::from("node_modules")).await;
         return Ok(());
     }
 
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         let elapsed = start.elapsed().as_secs_f64();
         println!("Elapsed: {:.8?}", elapsed);
-        goto_match(&command, args_iter.collect(), start).await;
+        goto_match(&command, args_iter.collect(), start, config.cache_dir).await;
     }
 
     Ok(())
@@ -65,14 +65,10 @@ fn parse_config_args(mut args_iter: impl Iterator<Item = String>) -> Option<Stri
 }
 
 
-async fn goto_match(command: &str, args: Vec<String>, start: Instant) {
+async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir: PathBuf) {
     match command {
         "add" => {
             let current_dir:PathBuf = env::current_dir().unwrap();
-
-            //get node modules path
-            let cache_dir: PathBuf = current_dir.join("node_modules");
-
             // Extract package names from args if command is 'add'
             let package_names: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
