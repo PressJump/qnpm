@@ -8,56 +8,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tar::Archive;
 use tar::EntryType;
-use thiserror::Error;
-use reqwest::Error as ReqwestError;
 use std::io::Cursor;
-use tokio::task;
 
-#[derive(Debug, Error)]
-pub enum AddCommandError {
-    #[error("Failed to parse JSON: {0}")]
-    FailedToParsePackageMeta(reqwest::Error),
-    #[error("Failed to retrieve package data: {0}")]
-    FailedToRetrievePackageData(reqwest::Error),
-    #[error("No valid tarball url for package '{0}'")]
-    NoValidTarballUrl(String),
-    #[error("Failed to extract file name from URL")]
-    FailedToExtractFileName,
-    #[error("Failed to spawn aria2c process: {0}")]
-    FailedToSpawnAria2c(std::io::Error),
-    #[error("Failed to wait for aria2c process: {0}")]
-    FailedToWaitForAria2c(std::io::Error),
-    #[error("Failed to open file: {0}")]
-    FailedToOpenFile(std::io::Error),
-}
-
-#[derive(Debug, Error)]
-pub enum DownloadError {
-    #[error("Failed to download file: {0}")]
-    DownloadFailed(ReqwestError),
-    #[error("Failed to extract file: {0}")]
-    ExtractionFailed(std::io::Error),
-    #[error("Failed to create directories: {0}")]
-    DirectoryCreationFailed(std::io::Error),
-}
-
-impl From<std::io::Error> for AddCommandError {
-    fn from(err: std::io::Error) -> AddCommandError {
-        AddCommandError::FailedToOpenFile(err)
-    }
-}
-
-impl From<ReqwestError> for DownloadError {
-    fn from(err: ReqwestError) -> Self {
-        DownloadError::DownloadFailed(err)
-    }
-}
-
-impl From<std::io::Error> for DownloadError {
-    fn from(err: std::io::Error) -> Self {
-        DownloadError::ExtractionFailed(err)
-    }
-}
+use super::packageconfig::add_to_package_json;
+use super::packageconfig::add_to_package_lock_json;
+use super::errors::{DownloadError, AddCommandError};
 
 async fn get_pkg_tarball_url(package_name: &str) -> Result<String, AddCommandError> {
     let url = format!("https://registry.npmjs.org/{}", package_name);
@@ -76,79 +31,6 @@ async fn get_pkg_tarball_url(package_name: &str) -> Result<String, AddCommandErr
     }
     Err(AddCommandError::NoValidTarballUrl(package_name.to_string()))
 }
-
-fn add_to_package_json(package_name: &str, current_dir: &PathBuf) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let package_json_path = current_dir.join("package.json");
-    let mut package_json = std::fs::read_to_string(&package_json_path)?;
-    let package_json_value: Value = serde_json::from_str(&package_json)?;
-    let mut package_json_object = package_json_value
-        .as_object()
-        .ok_or("Invalid package.json format")?
-        .clone();
-    let dependencies = package_json_object
-        .entry("dependencies")
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    if let Some(dep_object) = dependencies.as_object_mut() {
-        dep_object.insert(
-            package_name.to_string(),
-            serde_json::Value::String("*".to_string()),
-        );
-    }
-    let updated_json = serde_json::to_string_pretty(&package_json_object)?;
-    std::fs::write(package_json_path, updated_json)?;
-    Ok(())
-}
-
-//dependencies object custom type
-enum Dependencies {
-    //dependencies must be enum of name and version number so both &str and with variable age
-    Name(String),
-    Version(String)
-}
-
-// version, resolved, dependencies, engines
-//dependencies must be enum of string and version number
-async fn add_to_package_lock_json(
-    package_name: &str, 
-    current_dir: &PathBuf, 
-    version: &str, 
-    resolved: &str, 
-    dependencies: Value
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let package_lock_json_path = current_dir.join("package-lock.json");
-
-    // Check if package-lock.json exists, if not, create a new JSON object with basic structure
-    let mut package_lock_json = if package_lock_json_path.exists() {
-        let package_lock_json_content = fs::read_to_string(&package_lock_json_path)?;
-        serde_json::from_str(&package_lock_json_content)?
-    } else {
-        serde_json::json!({
-            "name": "your_project_name", // Replace with actual project name
-            "version": "1.0.0",
-            "lockfileVersion": 3,
-            "requires": true,
-            "dependencies": {}
-        })
-    };
-
-    // Add or update the dependencies
-    let dependencies_object = package_lock_json["dependencies"]
-        .as_object_mut()
-        .ok_or("Invalid package-lock.json format")?;
-
-    dependencies_object.insert(package_name.to_string(), serde_json::json!({
-        "version": version,
-        "resolved": resolved,
-        "dependencies": dependencies
-    }));
-
-    let updated_json = serde_json::to_string_pretty(&package_lock_json)?;
-    fs::write(package_lock_json_path, updated_json)?;
-
-    Ok(())
-}
-
-
 
 #[async_recursion]
 pub async fn add_packages_with_dependencies(
