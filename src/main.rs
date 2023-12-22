@@ -11,6 +11,8 @@ use std::path::Path;
 use std::sync::Arc;
 mod run;
 use run::run_script;
+mod packageconfig;
+mod errors;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
