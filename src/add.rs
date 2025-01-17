@@ -224,7 +224,13 @@ pub async fn install_package_dependencies(
     if let Some(dependencies) = package["dependencies"].as_object() {
         let mut dep_packages = Vec::new();
         for (name, version) in dependencies.iter() {
-            dep_packages.push(get_pkg_details_with_version(name, version.as_str().unwrap()).await.unwrap());
+            let version_str = version.as_str().unwrap();
+            let package_detail = if version_str.starts_with("^") {
+                get_pkg_details(name).await?
+            } else {
+                get_pkg_details_with_version(name, version_str).await?
+            };
+            dep_packages.push(package_detail);
         }
         add_packages_with_dependencies(&dep_packages, Arc::clone(current_dir), Arc::clone(cache_dir)).await?;
     }
