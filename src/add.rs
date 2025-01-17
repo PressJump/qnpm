@@ -88,6 +88,24 @@ async fn get_pkg_details(package_name: &str) -> Result<Package, AddCommandError>
     Err(AddCommandError::NoValidTarballUrl(package_name.to_string()))
 }
 
+async fn get_pkg_details_with_version(package_name: &str, version: &str) -> Result<Package, AddCommandError> {
+    let url = format!("https://registry.npmjs.org/{}/{}", package_name, version);
+    let package_metadata = reqwest::get(&url)
+        .await
+        .map_err(|e| AddCommandError::FailedToRetrievePackageData(e))?
+        .json::<Value>()
+        .await
+        .map_err(|e| AddCommandError::FailedToParsePackageMeta(e))?;
+    if let Some(tarball_url) = package_metadata["dist"]["tarball"].as_str() {
+        return Ok(Package {
+            name: package_name.to_string(),
+            tarball_url: tarball_url.to_string(),
+            version: version.to_string(),
+        });
+    }
+    Err(AddCommandError::NoValidTarballUrl(package_name.to_string()))
+}
+
 fn add_to_package_json(package: Package, current_dir: &PathBuf) {
     let package_json_path = current_dir.join("package.json");
     let mut package_json = std::fs::read_to_string(&package_json_path).unwrap();
@@ -204,12 +222,16 @@ pub async fn install_package_dependencies(
     let package: Value = serde_json::from_str(&package_json)?;
 
     if let Some(dependencies) = package["dependencies"].as_object() {
-        let dep_names: Vec<String> = dependencies.keys().cloned().collect();
-        add_packages_with_dependencies_from_names(&dep_names, Arc::clone(current_dir), Arc::clone(cache_dir)).await?;
+        let mut dep_packages = Vec::new();
+        for (name, version) in dependencies.iter() {
+            dep_packages.push(get_pkg_details_with_version(name, version.as_str().unwrap()).await.unwrap());
+        }
+        add_packages_with_dependencies(&dep_packages, Arc::clone(current_dir), Arc::clone(cache_dir)).await?;
     }
 
     Ok(())
 }
+
 
 
 pub async fn download_and_extract_with_reqwest(
