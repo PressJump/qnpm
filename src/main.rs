@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 mod run;
 use run::run_script;
+mod remove;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -97,6 +98,27 @@ async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir:
                 eprintln!("Error adding packages: {}", e);
             }
         },
+        "remove" => 
+        {
+            let current_dir: PathBuf = env::current_dir().unwrap();
+
+            if !Path::new("package.json").exists() {
+                println!("package.json not found");
+                return;
+            }
+
+            if args.is_empty() {
+                println!("Usage: qnpm remove <package_name>");
+                return;
+            }
+
+            //for loop package names and remove them
+            for package_name in args {
+                if let Err(e) = remove::remove(&package_name, &current_dir) {
+                    eprintln!("Error removing package: {}", e);
+                }
+            }
+        }
         "run" => {
             let current_dir: PathBuf = env::current_dir().unwrap();
             if args.is_empty() {
