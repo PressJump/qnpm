@@ -59,13 +59,14 @@ impl From<std::io::Error> for DownloadError {
     }
 }
 
-struct Package {
+#[derive(Clone)]
+pub struct Package {
     name: String,
     tarball_url: String,
     version: String,
 }
 
-async fn get_pkg_details( package_name: &str) -> Result<Package, AddCommandError> {
+async fn get_pkg_details(package_name: &str) -> Result<Package, AddCommandError> {
     let url = format!("https://registry.npmjs.org/{}", package_name);
     let package_metadata = reqwest::get(&url)
         .await
@@ -87,7 +88,7 @@ async fn get_pkg_details( package_name: &str) -> Result<Package, AddCommandError
     Err(AddCommandError::NoValidTarballUrl(package_name.to_string()))
 }
 
-fn add_to_package_json(package:Package, current_dir: &PathBuf) {
+fn add_to_package_json(package: Package, current_dir: &PathBuf) {
     let package_json_path = current_dir.join("package.json");
     let mut package_json = std::fs::read_to_string(&package_json_path).unwrap();
     let package_json_value: Value = serde_json::from_str(&package_json).unwrap();
@@ -109,25 +110,43 @@ fn add_to_package_json(package:Package, current_dir: &PathBuf) {
 }
 
 #[async_recursion]
+pub async fn add_packages_with_dependencies_from_names(
+    package_names: &[String],
+    current_dir: Arc<PathBuf>,
+    cache_dir: Arc<PathBuf>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut packages = Vec::new();
+    for package_name in package_names {
+        let package = get_pkg_details(package_name).await?;
+        packages.push(package);
+    }
+    add_packages_with_dependencies(&packages, current_dir, cache_dir).await
+}
+
+#[async_recursion]
 pub async fn add_packages_with_dependencies(
-    package_names: &[&str],
+    packages: &[Package],
     current_dir: Arc<PathBuf>,
     cache_dir: Arc<PathBuf>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut tasks = Vec::new();
 
-    for &package_name in package_names {
+    for package in packages {
         let current_dir_clone = Arc::clone(&current_dir);
         let cache_dir_clone = Arc::clone(&cache_dir);
-        let package_name_owned = package_name.to_owned(); // Cloning the package name
+        let package_clone = Package {
+            name: package.name.clone(),
+            tarball_url: package.tarball_url.clone(),
+            version: package.version.clone(),
+        };
 
         let task = tokio::spawn(async move {
-            let package = get_pkg_details(&package_name_owned).await?;
-            let tarball_url = package.tarball_url.clone();
+            let tarball_url = package_clone.tarball_url.clone();
             let file_name = tarball_url.rsplit('/').next()
                 .ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Failed to extract file name from URL")))?;
 
-            let package_name = file_name.splitn(2, ".tgz").next().ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Invalid file name format")))?;
+            let package_name = file_name.splitn(2, ".tgz").next()
+                .ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Invalid file name format")))?;
             let package_path = cache_dir_clone.join(format!("node_modules/{}", package_name));
 
             let local_package_path = current_dir_clone.join(format!("node_modules/{}", package_name));
@@ -135,15 +154,15 @@ pub async fn add_packages_with_dependencies(
                 return Ok::<(), Box<dyn Error + Send + Sync>>(());
             }
 
-            add_to_package_json(package, &current_dir_clone);
+            add_to_package_json(package_clone.clone(), &current_dir_clone);
             if package_path.exists() {
-                println!("Package {} already installed, using cache.", package_name_owned);
+                println!("Package {} already installed, using cache.", format!("{}@{}", package_clone.name, package_clone.version));
                 folder_symlink(&current_dir_clone, &cache_dir_clone, package_name);
             } else {
-                println!("Downloading package {}", package_name_owned);
+                println!("Downloading package {}", format!("{}@{}", package_clone.name, package_clone.version));
                 download_and_extract_with_reqwest(&tarball_url, &current_dir_clone, &cache_dir_clone).await?;
             }
-            install_package_dependencies(&package_name_owned, &tarball_url, &current_dir_clone, &cache_dir_clone).await?;
+            install_package_dependencies(&package_clone.name, &tarball_url, &current_dir_clone, &cache_dir_clone).await?;
             Ok(())
         });
 
@@ -156,7 +175,6 @@ pub async fn add_packages_with_dependencies(
 
     Ok(())
 }
-
 
 #[async_recursion]
 pub async fn install_package_dependencies(
@@ -186,8 +204,8 @@ pub async fn install_package_dependencies(
     let package: Value = serde_json::from_str(&package_json)?;
 
     if let Some(dependencies) = package["dependencies"].as_object() {
-        let dep_names: Vec<&str> = dependencies.keys().map(AsRef::as_ref).collect();
-        add_packages_with_dependencies(&dep_names, Arc::clone(current_dir), Arc::clone(cache_dir)).await?;
+        let dep_names: Vec<String> = dependencies.keys().cloned().collect();
+        add_packages_with_dependencies_from_names(&dep_names, Arc::clone(current_dir), Arc::clone(cache_dir)).await?;
     }
 
     Ok(())
@@ -240,6 +258,9 @@ pub async fn download_and_extract_with_reqwest(
 }
 
 use std::os::windows::fs::symlink_dir;
-pub fn folder_symlink(current_dir:&PathBuf, cache_dir:&PathBuf, downloadedpackagename:&str) {
-    symlink_dir(cache_dir.join("node_modules").join(downloadedpackagename), current_dir.join("node_modules").join(downloadedpackagename));
+pub fn folder_symlink(current_dir: &PathBuf, cache_dir: &PathBuf, downloadedpackagename: &str) {
+    symlink_dir(
+        cache_dir.join("node_modules").join(downloadedpackagename),
+        current_dir.join("node_modules").join(downloadedpackagename),
+    ).unwrap_or_else(|e| eprintln!("Failed to create symlink for {}: {}", downloadedpackagename, e));
 }

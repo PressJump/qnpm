@@ -68,33 +68,42 @@ fn parse_config_args(mut args_iter: impl Iterator<Item = String>) -> Option<Stri
 async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir: PathBuf) {
     match command {
         "add" => {
-            let current_dir:PathBuf = env::current_dir().unwrap();
+            let current_dir: PathBuf = env::current_dir().unwrap();
             // Extract package names from args if command is 'add'
-            let package_names: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let package_names: Vec<String> = args.iter().cloned().collect();
 
-            //if package.json doesn't exist, create it
+            // if package.json doesn't exist, create it
             if !Path::new("package.json").exists() {
                 init::create_bare_package_json(&current_dir);
             }
 
             if !Path::new("node_modules").exists() {
-                std::fs::create_dir_all("node_modules");
+                std::fs::create_dir_all("node_modules").unwrap();
             }
 
-            //Make sure cachedir also has node_modules
+            // Make sure cache_dir also has node_modules
             if !Path::new(&cache_dir.join("node_modules")).exists() {
-                std::fs::create_dir_all(&cache_dir.join("node_modules"));
+                std::fs::create_dir_all(&cache_dir.join("node_modules")).unwrap();
             }
-            //wrap params in arc
-            add::add_packages_with_dependencies(&package_names, Arc::new(current_dir), Arc::new(cache_dir)).await;
+
+            // Wrap params in Arc and call the new function
+            if let Err(e) = add::add_packages_with_dependencies_from_names(
+                &package_names,
+                Arc::new(current_dir),
+                Arc::new(cache_dir),
+            )
+            .await
+            {
+                eprintln!("Error adding packages: {}", e);
+            }
         },
         "run" => {
-            let current_dir:PathBuf = env::current_dir().unwrap();
-            if (args.len() == 0) {
+            let current_dir: PathBuf = env::current_dir().unwrap();
+            if args.is_empty() {
                 println!("Usage: qnpm run <script_name>");
                 return;
             }
-            if (!current_dir.join("package.json").exists()) {
+            if !current_dir.join("package.json").exists() {
                 println!("package.json not found");
                 return;
             }
@@ -102,7 +111,7 @@ async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir:
             run_script(&package_json_path, &args[0]).unwrap();
         }
         "init" => {
-            let current_dir:PathBuf = env::current_dir().unwrap();
+            let current_dir: PathBuf = env::current_dir().unwrap();
             init::initialize_node(&current_dir);
         },
         _ => println!("Command not found")
