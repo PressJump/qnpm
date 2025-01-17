@@ -287,8 +287,13 @@ pub async fn download_and_extract_with_reqwest(
 
 use std::os::windows::fs::symlink_dir;
 pub fn folder_symlink(current_dir: &PathBuf, cache_dir: &PathBuf, downloadedpackagename: &str) {
+    let local_package_name = if let Some(pos) = downloadedpackagename.rfind('-') {
+        downloadedpackagename[..pos].to_string()
+    } else {
+        downloadedpackagename.to_string()
+    };
     symlink_dir(
         cache_dir.join("node_modules").join(downloadedpackagename),
-        current_dir.join("node_modules").join(downloadedpackagename),
+        current_dir.join("node_modules").join(local_package_name),
     ).unwrap_or_else(|e| eprintln!("Failed to create symlink for {}: {}", downloadedpackagename, e));
 }
