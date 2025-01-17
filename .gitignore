@@ -15,3 +15,5 @@ Cargo.lock
 *.pdb
 
 node_modules
+package.json
+package_manager_config.json
