@@ -59,7 +59,13 @@ impl From<std::io::Error> for DownloadError {
     }
 }
 
-async fn get_pkg_tarball_url(package_name: &str) -> Result<String, AddCommandError> {
+struct Package {
+    name: String,
+    tarball_url: String,
+    version: String,
+}
+
+async fn get_pkg_details( package_name: &str) -> Result<Package, AddCommandError> {
     let url = format!("https://registry.npmjs.org/{}", package_name);
     let package_metadata = reqwest::get(&url)
         .await
@@ -71,32 +77,35 @@ async fn get_pkg_tarball_url(package_name: &str) -> Result<String, AddCommandErr
         if let Some(tarball_url) =
             package_metadata["versions"][latest_version]["dist"]["tarball"].as_str()
         {
-            return Ok(tarball_url.to_string());
+            return Ok(Package {
+                name: package_name.to_string(),
+                tarball_url: tarball_url.to_string(),
+                version: latest_version.to_string(),
+            });
         }
     }
     Err(AddCommandError::NoValidTarballUrl(package_name.to_string()))
 }
 
-fn add_to_package_json(package_name: &str, current_dir: &PathBuf) -> Result<(), Box<dyn Error + Send + Sync>> {
+fn add_to_package_json(package:Package, current_dir: &PathBuf) {
     let package_json_path = current_dir.join("package.json");
-    let mut package_json = std::fs::read_to_string(&package_json_path)?;
-    let package_json_value: Value = serde_json::from_str(&package_json)?;
+    let mut package_json = std::fs::read_to_string(&package_json_path).unwrap();
+    let package_json_value: Value = serde_json::from_str(&package_json).unwrap();
     let mut package_json_object = package_json_value
         .as_object()
-        .ok_or("Invalid package.json format")?
+        .unwrap()
         .clone();
     let dependencies = package_json_object
         .entry("dependencies")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     if let Some(dep_object) = dependencies.as_object_mut() {
         dep_object.insert(
-            package_name.to_string(),
-            serde_json::Value::String("*".to_string()),
+            package.name,
+            serde_json::Value::String(package.version),
         );
     }
-    let updated_json = serde_json::to_string_pretty(&package_json_object)?;
-    std::fs::write(package_json_path, updated_json)?;
-    Ok(())
+    let updated_json = serde_json::to_string_pretty(&package_json_object).unwrap();
+    std::fs::write(package_json_path, updated_json).unwrap();
 }
 
 #[async_recursion]
@@ -113,7 +122,8 @@ pub async fn add_packages_with_dependencies(
         let package_name_owned = package_name.to_owned(); // Cloning the package name
 
         let task = tokio::spawn(async move {
-            let tarball_url = get_pkg_tarball_url(&package_name_owned).await?;
+            let package = get_pkg_details(&package_name_owned).await?;
+            let tarball_url = package.tarball_url.clone();
             let file_name = tarball_url.rsplit('/').next()
                 .ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Failed to extract file name from URL")))?;
 
@@ -125,7 +135,7 @@ pub async fn add_packages_with_dependencies(
                 return Ok::<(), Box<dyn Error + Send + Sync>>(());
             }
 
-            add_to_package_json(&package_name_owned, &current_dir_clone);
+            add_to_package_json(package, &current_dir_clone);
             if package_path.exists() {
                 println!("Package {} already installed, using cache.", package_name_owned);
                 folder_symlink(&current_dir_clone, &cache_dir_clone, package_name);
