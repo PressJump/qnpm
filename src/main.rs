@@ -11,9 +11,6 @@ use std::path::Path;
 use std::sync::Arc;
 mod run;
 use run::run_script;
-mod packageconfig;
-mod errors;
-mod remove;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -28,10 +25,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    // Directly jump to match if command is neither 'config' nor 'add'.
-    // In the future, this should be changed to a dynamic solution although this would slow it down.
-    // Maybe a dictionary of commands and their requirement to loading configuration files.
-
+    // Directly jump to match if command is neither 'config' nor 'add'
     if command != "config" && command != "add" {
         let elapsed = start.elapsed().as_secs_f64();
         println!("Elapsed: {:.8?}", elapsed);
@@ -70,78 +64,49 @@ fn parse_config_args(mut args_iter: impl Iterator<Item = String>) -> Option<Stri
     cache_dir
 }
 
-async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir: PathBuf) {
-    let current_dir = match env::current_dir() {
-        Ok(dir) => dir,
-        Err(_) => {
-            eprintln!("Error: Unable to determine the current directory");
-            return;
-        }
-    };
 
+async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir: PathBuf) {
     match command {
         "add" => {
-            create_required_dirs_and_files(&current_dir, &cache_dir).await;
-
+            let current_dir:PathBuf = env::current_dir().unwrap();
+            // Extract package names from args if command is 'add'
             let package_names: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            if let Err(e) = add::add_and_install_packages(&package_names, Arc::new(current_dir), Arc::new(cache_dir)).await {
-                eprintln!("Error: {}", e);
-            }
-        },
-        "remove" => {
-            if args.is_empty() {
-                println!("Usage: qnpm remove <package_name, ...>");
-                return;
+
+            //if package.json doesn't exist, create it
+            if !Path::new("package.json").exists() {
+                init::create_bare_package_json(&current_dir);
             }
 
-            if let Err(e) = remove::remove_package(&args[0], &current_dir) {
-                eprintln!("Error: {}", e);
+            if !Path::new("node_modules").exists() {
+                std::fs::create_dir_all("node_modules");
             }
-        }
+
+            //Make sure cachedir also has node_modules
+            if !Path::new(&cache_dir.join("node_modules")).exists() {
+                std::fs::create_dir_all(&cache_dir.join("node_modules"));
+            }
+            //wrap params in arc
+            add::add_packages_with_dependencies(&package_names, Arc::new(current_dir), Arc::new(cache_dir)).await;
+        },
         "run" => {
-            if args.is_empty() {
+            let current_dir:PathBuf = env::current_dir().unwrap();
+            if (args.len() == 0) {
                 println!("Usage: qnpm run <script_name>");
                 return;
             }
-
-            let package_json_path = current_dir.join("package.json");
-            if !package_json_path.exists() {
+            if (!current_dir.join("package.json").exists()) {
                 println!("package.json not found");
                 return;
             }
-
-            if let Err(e) = run_script(&package_json_path, &args[0]) {
-                eprintln!("Error: {}", e);
-            }
+            let package_json_path: PathBuf = current_dir.join("package.json");
+            run_script(&package_json_path, &args[0]).unwrap();
         }
         "init" => {
-            if let Err(e) = init::initialize_node(&current_dir) {
-                eprintln!("Error: {}", e);
-            }
+            let current_dir:PathBuf = env::current_dir().unwrap();
+            init::initialize_node(&current_dir);
         },
-        _ => println!("Command not found"),
+        _ => println!("Command not found")
     }
-    
     let elapsed = start.elapsed().as_secs_f64();
-    println!("Elapsed: {:.8} seconds", elapsed);
-}
-
-async fn create_required_dirs_and_files(current_dir: &PathBuf, cache_dir: &PathBuf) {
-    let package_json_path = current_dir.join("package.json");
-    let package_lock_json_path = current_dir.join("package-lock.json");
-    let node_modules_path = current_dir.join("node_modules");
-    let cache_node_modules_path = cache_dir.join("node_modules");
-
-    if !package_json_path.exists() {
-        init::create_bare_package_json(current_dir);
-    }
-    if !node_modules_path.exists() {
-        std::fs::create_dir_all(node_modules_path).unwrap_or_else(|_| eprintln!("Error: Unable to create node_modules directory"));
-    }
-    if !cache_node_modules_path.exists() {
-        std::fs::create_dir_all(cache_node_modules_path).unwrap_or_else(|_| eprintln!("Error: Unable to create cache node_modules directory"));
-    }
-    if !package_lock_json_path.exists() {
-        init::create_bare_package_lock_json(current_dir);
-    }
+    println!("Elapsed: {:.8?}", elapsed);
 }

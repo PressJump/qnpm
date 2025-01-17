@@ -8,11 +8,56 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tar::Archive;
 use tar::EntryType;
+use thiserror::Error;
+use reqwest::Error as ReqwestError;
 use std::io::Cursor;
+use tokio::task;
 
-use super::packageconfig::add_to_package_json;
-use super::packageconfig::add_to_package_lock_json;
-use super::errors::{DownloadError, AddCommandError};
+#[derive(Debug, Error)]
+pub enum AddCommandError {
+    #[error("Failed to parse JSON: {0}")]
+    FailedToParsePackageMeta(reqwest::Error),
+    #[error("Failed to retrieve package data: {0}")]
+    FailedToRetrievePackageData(reqwest::Error),
+    #[error("No valid tarball url for package '{0}'")]
+    NoValidTarballUrl(String),
+    #[error("Failed to extract file name from URL")]
+    FailedToExtractFileName,
+    #[error("Failed to spawn aria2c process: {0}")]
+    FailedToSpawnAria2c(std::io::Error),
+    #[error("Failed to wait for aria2c process: {0}")]
+    FailedToWaitForAria2c(std::io::Error),
+    #[error("Failed to open file: {0}")]
+    FailedToOpenFile(std::io::Error),
+}
+
+#[derive(Debug, Error)]
+pub enum DownloadError {
+    #[error("Failed to download file: {0}")]
+    DownloadFailed(ReqwestError),
+    #[error("Failed to extract file: {0}")]
+    ExtractionFailed(std::io::Error),
+    #[error("Failed to create directories: {0}")]
+    DirectoryCreationFailed(std::io::Error),
+}
+
+impl From<std::io::Error> for AddCommandError {
+    fn from(err: std::io::Error) -> AddCommandError {
+        AddCommandError::FailedToOpenFile(err)
+    }
+}
+
+impl From<ReqwestError> for DownloadError {
+    fn from(err: ReqwestError) -> Self {
+        DownloadError::DownloadFailed(err)
+    }
+}
+
+impl From<std::io::Error> for DownloadError {
+    fn from(err: std::io::Error) -> Self {
+        DownloadError::ExtractionFailed(err)
+    }
+}
 
 async fn get_pkg_tarball_url(package_name: &str) -> Result<String, AddCommandError> {
     let url = format!("https://registry.npmjs.org/{}", package_name);
@@ -32,42 +77,112 @@ async fn get_pkg_tarball_url(package_name: &str) -> Result<String, AddCommandErr
     Err(AddCommandError::NoValidTarballUrl(package_name.to_string()))
 }
 
+fn add_to_package_json(package_name: &str, current_dir: &PathBuf) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let package_json_path = current_dir.join("package.json");
+    let mut package_json = std::fs::read_to_string(&package_json_path)?;
+    let package_json_value: Value = serde_json::from_str(&package_json)?;
+    let mut package_json_object = package_json_value
+        .as_object()
+        .ok_or("Invalid package.json format")?
+        .clone();
+    let dependencies = package_json_object
+        .entry("dependencies")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(dep_object) = dependencies.as_object_mut() {
+        dep_object.insert(
+            package_name.to_string(),
+            serde_json::Value::String("*".to_string()),
+        );
+    }
+    let updated_json = serde_json::to_string_pretty(&package_json_object)?;
+    std::fs::write(package_json_path, updated_json)?;
+    Ok(())
+}
+
 #[async_recursion]
-pub async fn add_and_install_packages(
+pub async fn add_packages_with_dependencies(
     package_names: &[&str],
     current_dir: Arc<PathBuf>,
     cache_dir: Arc<PathBuf>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut tasks = Vec::new();
+
     for &package_name in package_names {
         let current_dir_clone = Arc::clone(&current_dir);
         let cache_dir_clone = Arc::clone(&cache_dir);
-        let package_name_owned = package_name.to_owned();
-        let tarball_url = get_pkg_tarball_url(&package_name_owned).await?;
-        let file_name = tarball_url.rsplit('/').next().ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Failed to extract file name")))?;
-        let (package, version) = file_name.splitn(2, ".tgz").next().zip(file_name.split('-').last().map(|v| v.trim_end_matches(".tgz"))).ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Invalid file format")))?;
-        let local_package_path = current_dir_clone.join(format!("node_modules/{}", package));
-        if !local_package_path.exists() {
-            if cache_dir_clone.join(format!("node_modules/{}", package)).exists() {
-                println!("Using cached {}", package_name_owned);
-                folder_symlink(&current_dir_clone, &cache_dir_clone, package);
+        let package_name_owned = package_name.to_owned(); // Cloning the package name
+
+        let task = tokio::spawn(async move {
+            let tarball_url = get_pkg_tarball_url(&package_name_owned).await?;
+            let file_name = tarball_url.rsplit('/').next()
+                .ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Failed to extract file name from URL")))?;
+
+            let package_name = file_name.splitn(2, ".tgz").next().ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Invalid file name format")))?;
+            let package_path = cache_dir_clone.join(format!("node_modules/{}", package_name));
+
+            let local_package_path = current_dir_clone.join(format!("node_modules/{}", package_name));
+            if local_package_path.exists() {
+                return Ok::<(), Box<dyn Error + Send + Sync>>(());
+            }
+
+            add_to_package_json(&package_name_owned, &current_dir_clone);
+            if package_path.exists() {
+                println!("Package {} already installed, using cache.", package_name_owned);
+                folder_symlink(&current_dir_clone, &cache_dir_clone, package_name);
             } else {
-                println!("Downloading {}", package_name_owned);
+                println!("Downloading package {}", package_name_owned);
                 download_and_extract_with_reqwest(&tarball_url, &current_dir_clone, &cache_dir_clone).await?;
             }
-            add_to_package_json(&package_name_owned, &current_dir_clone);
-            add_to_package_lock_json(&package_name_owned, &current_dir_clone, version, &tarball_url, serde_json::json!({})).await?;
-            let pkg_json_path = cache_dir_clone.join(format!("node_modules/{}/package.json", package)).into_os_string().into_string().unwrap().replace("\\", "/");
-            if let Ok(content) = std::fs::read_to_string(Path::new(&pkg_json_path)) {
-                if let Ok(package) = serde_json::from_str::<Value>(&content) {
-                    if let Some(deps) = package["dependencies"].as_object() {
-                        add_and_install_packages(&deps.keys().map(AsRef::as_ref).collect::<Vec<&str>>(), Arc::clone(&current_dir_clone), Arc::clone(&cache_dir_clone)).await?;
-                    }
-                }
-            }
-        }
+            install_package_dependencies(&package_name_owned, &tarball_url, &current_dir_clone, &cache_dir_clone).await?;
+            Ok(())
+        });
+
+        tasks.push(task);
     }
+
+    for task in tasks {
+        task.await??;
+    }
+
     Ok(())
 }
+
+
+#[async_recursion]
+pub async fn install_package_dependencies(
+    package_name: &str,
+    url: &str,
+    current_dir: &Arc<PathBuf>,
+    cache_dir: &Arc<PathBuf>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let file_name = url.rsplit('/').next()
+        .ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Failed to extract file name from URL")))?;
+    let downloaded_package_name = file_name.splitn(2, ".tgz").next().ok_or_else(|| DownloadError::ExtractionFailed(std::io::Error::new(std::io::ErrorKind::Other, "Invalid file name format")))?;
+
+    let package_json_path = cache_dir
+        .join(format!("node_modules/{}/package.json", downloaded_package_name))
+        .into_os_string()
+        .into_string()
+        .unwrap()
+        .replace("\\", "/");
+
+    let package_json = match std::fs::read_to_string(Path::new(&package_json_path)) {
+        Ok(content) => content,
+        Err(_) => {
+            println!("package.json not found for package {}", package_name);
+            return Ok(())
+        }
+    };
+    let package: Value = serde_json::from_str(&package_json)?;
+
+    if let Some(dependencies) = package["dependencies"].as_object() {
+        let dep_names: Vec<&str> = dependencies.keys().map(AsRef::as_ref).collect();
+        add_packages_with_dependencies(&dep_names, Arc::clone(current_dir), Arc::clone(cache_dir)).await?;
+    }
+
+    Ok(())
+}
+
 
 pub async fn download_and_extract_with_reqwest(
     url: &str,

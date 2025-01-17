@@ -1,3 +1,5 @@
+// config.rs
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
