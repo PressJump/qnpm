@@ -135,7 +135,18 @@ pub async fn add_packages_with_dependencies_from_names(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut packages = Vec::new();
     for package_name in package_names {
-        let package = get_pkg_details(package_name).await?;
+        //Get version if specified
+        let package = if package_name.contains("@") {
+            let package_split: Vec<&str> = package_name.split('@').collect();
+            //if @latest is specified, get latest version
+            if package_split[1] == "latest" {
+                get_pkg_details(package_split[0]).await?
+            } else {
+                get_pkg_details_with_version(package_split[0], package_split[1]).await?
+            }
+        } else {
+            get_pkg_details(package_name).await?
+        };
         packages.push(package);
     }
     add_packages_with_dependencies(&packages, current_dir, cache_dir).await
