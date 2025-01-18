@@ -12,6 +12,7 @@ use std::sync::Arc;
 mod run;
 use run::run_script;
 mod remove;
+mod uninstall;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -128,7 +129,7 @@ async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir:
             {
                 eprintln!("Error adding packages: {}", e);
             }
-        }
+        },
         "remove" => 
         {
             let current_dir: PathBuf = env::current_dir().unwrap();
@@ -149,7 +150,28 @@ async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir:
                     eprintln!("Error removing package: {}", e);
                 }
             }
-        }
+        },
+        "uninstall" => 
+        {
+            let current_dir: PathBuf = env::current_dir().unwrap();
+    
+            if !Path::new("package.json").exists() {
+                println!("package.json not found");
+                return;
+            }
+
+            if args.is_empty() {
+                println!("Usage: qnpm uninstall <package_name>");
+                return;
+            }
+
+            //for loop package names and uninstall them
+            for package_name in args {
+                if let Err(e) = uninstall::uninstall(&package_name, &current_dir, &cache_dir) {
+                    eprintln!("Error uninstalling package: {}", e);
+                }
+            }
+        },
         "run" => {
             let current_dir: PathBuf = env::current_dir().unwrap();
             if args.is_empty() {
@@ -162,7 +184,7 @@ async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir:
             }
             let package_json_path: PathBuf = current_dir.join("package.json");
             run_script(&package_json_path, &args[0]).unwrap();
-        }
+        },
         "init" => {
             let current_dir: PathBuf = env::current_dir().unwrap();
             init::initialize_node(&current_dir);
