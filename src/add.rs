@@ -303,6 +303,11 @@ pub fn folder_symlink(current_dir: &PathBuf, cache_dir: &PathBuf, downloadedpack
     } else {
         downloadedpackagename.to_string()
     };
+    // if symlink already exists remove it / replace it 
+    // could be a better way to do this in the future for optimization
+    // but for now this way we can ensure that the symlink is always up to date
+    // and we don't have to worry about checking if it exists or not
+    let _ = std::fs::remove_dir(current_dir.join("node_modules").join(local_package_name));
     symlink_dir(
         cache_dir.join("node_modules").join(downloadedpackagename),
         current_dir.join("node_modules").join(local_package_name),
