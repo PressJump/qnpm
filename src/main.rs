@@ -13,6 +13,7 @@ mod run;
 use run::run_script;
 mod remove;
 mod uninstall;
+use crate::add::PackageRaw;
 
 
 #[tokio::main(flavor = "current_thread")]
@@ -29,7 +30,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Directly jump to match if command is neither 'config' nor 'add'
-    if command != "config" && command != "add" && command != "uninstall" {
+    if command != "config" && command != "add" && command != "uninstall" && command != "install" {
         let elapsed = start.elapsed().as_secs_f64();
         println!("Elapsed: {:.8?}", elapsed);
         goto_match(&command, args_iter.collect(), start, PathBuf::from("node_modules")).await;
