@@ -66,6 +66,11 @@ pub struct Package {
     version: String,
 }
 
+pub struct PackageRaw {
+    pub name: String,
+    pub version: String,
+}
+
 async fn get_pkg_details(package_name: &str) -> Result<Package, AddCommandError> {
     let url = format!("https://registry.npmjs.org/{}", package_name);
     let package_metadata = reqwest::get(&url)
@@ -147,6 +152,20 @@ pub async fn add_packages_with_dependencies_from_names(
         } else {
             get_pkg_details(package_name).await?
         };
+        packages.push(package);
+    }
+    add_packages_with_dependencies(&packages, current_dir, cache_dir).await
+}
+
+#[async_recursion]
+pub async fn add_packages_with_dependencies_from_names_with_version(
+    package_names: &[PackageRaw],
+    current_dir: Arc<PathBuf>,
+    cache_dir: Arc<PathBuf>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut packages = Vec::new();
+    for package in package_names {
+        let package = get_pkg_details_with_version(&package.name, &package.version).await?;
         packages.push(package);
     }
     add_packages_with_dependencies(&packages, current_dir, cache_dir).await

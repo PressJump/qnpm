@@ -14,6 +14,7 @@ use run::run_script;
 mod remove;
 mod uninstall;
 
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let start: Instant = Instant::now();
@@ -101,35 +102,31 @@ async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir:
         },
         "install" => 
         {
+            // Get current directory and package.json
             let current_dir: PathBuf = env::current_dir().unwrap();
-            // Extract package names from args if command is 'add'
-            let package_names: Vec<String> = args.iter().cloned().collect();
+            let package_json_path: PathBuf = current_dir.join("package.json");
+            let package_json_str = std::fs::read_to_string(&package_json_path).unwrap();
+            let package_json_value: serde_json::Value = serde_json::from_str(&package_json_str).unwrap();
 
-            // if package.json doesn't exist, create it
-            if !Path::new("package.json").exists() {
-                init::create_bare_package_json(&current_dir);
+            let dependencies = package_json_value["dependencies"].as_object().unwrap();
+            let mut package_raws: Vec<PackageRaw> = Vec::new();
+
+            for (package_name, package_version) in dependencies {
+                let package_raw = PackageRaw {
+                    name: package_name.to_string(),
+                    version: package_version.as_str().unwrap().to_string(),
+                };
+                package_raws.push(package_raw);
             }
 
-            if !Path::new("node_modules").exists() {
-                std::fs::create_dir_all("node_modules").unwrap();
-            }
-
-            // Make sure cache_dir also has node_modules
-            if !Path::new(&cache_dir.join("node_modules")).exists() {
-                std::fs::create_dir_all(&cache_dir.join("node_modules")).unwrap();
-            }
-
-            // Wrap params in Arc and call the new function
-            if let Err(e) = add::add_packages_with_dependencies_from_names(
-                &package_names,
+            if let Err(e) = add::add_packages_with_dependencies_from_names_with_version(
+                package_raws.as_slice(),
                 Arc::new(current_dir),
                 Arc::new(cache_dir),
-            )
-            .await
-            {
-                eprintln!("Error adding packages: {}", e);
+            ).await {
+                eprintln!("Error installing packages: {}", e);
             }
-        },
+            },
         "remove" => 
         {
             let current_dir: PathBuf = env::current_dir().unwrap();
