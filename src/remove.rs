@@ -6,11 +6,9 @@ use std::process::Command;
 pub fn remove(package_name: &str, current_dir: &PathBuf) -> Result<(), Box<dyn Error + Send + Sync>> {
     let node_modules = current_dir.join("node_modules");
     let package_dir = node_modules.join(package_name);
-    if !package_dir.exists() {
-        println!("Package not in node_modules, nothing to remove");
-        return Ok(());
+    if package_dir.exists() {
+        std::fs::remove_dir_all(package_dir)?;
     }
-    std::fs::remove_dir_all(package_dir)?;
     remove_from_package_json(package_name, current_dir)?;
     Ok(())
 }
@@ -26,6 +24,10 @@ fn remove_from_package_json(package_name: &str, current_dir: &PathBuf) -> Result
         dependencies.remove(package_name);
         let package_json_str = serde_json::to_string_pretty(&package_json_value)?;
         std::fs::write(&package_json, package_json_str)?;
+    }
+    else
+    {
+        println!("Package {} is not installed", package_name);
     }
     Ok(())
 }
