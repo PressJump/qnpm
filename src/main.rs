@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Directly jump to match if command is neither 'config' nor 'add'
-    if command != "config" && command != "add" {
+    if command != "config" && command != "add" && command != "uninstall" {
         let elapsed = start.elapsed().as_secs_f64();
         println!("Elapsed: {:.8?}", elapsed);
         goto_match(&command, args_iter.collect(), start, PathBuf::from("node_modules")).await;
@@ -164,7 +164,7 @@ async fn goto_match(command: &str, args: Vec<String>, start: Instant, cache_dir:
                 println!("Usage: qnpm uninstall <package_name>");
                 return;
             }
-
+            println!("Uninstalling packages");
             //for loop package names and uninstall them
             for package_name in args {
                 if let Err(e) = uninstall::uninstall(&package_name, &current_dir, &cache_dir) {

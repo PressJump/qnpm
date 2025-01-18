@@ -17,8 +17,9 @@ pub fn uninstall(package_name: &str, current_dir: &PathBuf, cache_dir: &PathBuf)
     //if package in package.json get version and remove from cache
     if dependencies.contains_key(package_name) {
         let package_version = dependencies[package_name].as_str().unwrap();
-        let package_cache_dir = cache_dir.join(package_name).join(package_version);
+        let package_cache_dir = cache_dir.join("node_modules").join(format!("{}-{}", package_name, package_version));
         if package_cache_dir.exists() {
+            println!("Removing package cache: {:?}", package_cache_dir);
             std::fs::remove_dir_all(package_cache_dir)?;
         }
     }
